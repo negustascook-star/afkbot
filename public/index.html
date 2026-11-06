@@ -71,6 +71,17 @@ label.chk input { width: auto; margin-top: 5px; }
 .sub-chk { margin-left: 26px; }
 .hint { font-size: .82rem; color: var(--muted); margin: -4px 0 0; }
 .dlg-acts { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+/* konsolė */
+#con { width: min(760px, calc(100vw - 24px)); }
+#con .wrap { padding: 16px 20px 20px; display: flex; flex-direction: column; gap: 10px; }
+#con header { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+#con h2 { font-size: 1.15rem; margin: 0; }
+#conOut { height: 52vh; max-height: none; margin: 0; }
+#conOut div { padding: 1px 0; }
+#conOut .t { color: var(--muted); margin-right: 8px; }
+#conOut .sys { color: var(--muted); }
+#conOut .me { color: var(--btn); font-weight: 600; }
+#conForm { display: flex; gap: 8px; }
 @media (max-width: 480px) { .two { grid-template-columns: 1fr 1fr; } .two label:first-child { grid-column: 1 / -1; } }
 </style>
 </head>
@@ -101,6 +112,19 @@ label.chk input { width: auto; margin-top: 5px; }
   <ul id="list"></ul>
   <p id="empty" hidden>Botų dar nėra. Paspausk „Pridėti botą“ ir įrašyk serverį bei slaptažodį.</p>
 </main>
+
+<dialog id="con">
+  <div class="wrap">
+    <header><h2 id="conTitle">Konsolė</h2><span class="st" id="conStatus"></span></header>
+    <pre id="conOut" aria-live="polite"></pre>
+    <form id="conForm" autocomplete="off">
+      <input id="conInput" placeholder="Žinutė arba komanda, pvz. /home" maxlength="256" aria-label="Žinutė arba komanda">
+      <button class="primary" type="submit">Siųsti</button>
+      <button type="button" id="conClose">Uždaryti</button>
+    </form>
+    <div class="err" id="conErr" role="alert"></div>
+  </div>
+</dialog>
 
 <dialog id="dlg">
   <form id="cfgForm" method="dialog">
@@ -192,6 +216,7 @@ const ROW = `
     <span class="stat">Prisijungęs: <b class="up"></b></span>
     <span class="stat">Kitas /login: <b class="rl"></b></span>
     <div class="acts">
+      <button data-act="console">Konsolė</button>
       <button data-act="edit">Nustatymai</button>
       <button data-act="restart">Perkrauti</button>
       <button data-act="toggle"></button>
@@ -256,6 +281,7 @@ $('#list').addEventListener('click', async e => {
   $('#msg').textContent = '';
   try {
     if (act === 'edit') return openDialog(bot);
+    if (act === 'console') return openConsole(bot);
     if (act === 'remove') {
       if (!confirm(`Pašalinti botą ${bot.config.name}?`)) return;
       await api('DELETE', `/api/bots/${id}`);
@@ -312,6 +338,75 @@ $('#cfgForm').addEventListener('submit', async e => {
     dlg.close();
     refresh();
   } catch (err) { $('#dlgErr').textContent = err.message; }
+});
+
+/* ---------- konsolė ---------- */
+const con = $('#con');
+let conId = null, conLast = 0, conTimer = null, conBusy = false;
+const conHistory = []; let conHi = 0;
+
+function addConLines(lines) {
+  const out = $('#conOut');
+  const stick = out.scrollHeight - out.scrollTop - out.clientHeight < 40;
+  for (const l of lines) {
+    const row = document.createElement('div');
+    row.className = l.kind;
+    const t = document.createElement('span');
+    t.className = 't'; t.textContent = l.t;
+    row.append(t, document.createTextNode((l.kind === 'me' ? '> ' : '') + l.text));
+    out.appendChild(row);
+  }
+  while (out.children.length > 400) out.firstChild.remove();
+  if (stick) out.scrollTop = out.scrollHeight;
+}
+
+async function pollConsole() {
+  if (!conId || conBusy) return;
+  conBusy = true;
+  const id = conId;
+  try {
+    const d = await api('GET', `/api/bots/${id}/console?since=${conLast}`);
+    if (id !== conId) return;
+    conLast = d.last;
+    $('#conStatus').textContent = STATUS[d.status] || d.status;
+    addConLines(d.lines);
+  } catch (_) { }
+  finally { conBusy = false; }
+}
+
+function openConsole(bot) {
+  conId = bot.id; conLast = 0;
+  $('#conTitle').textContent = `Konsolė: ${bot.config.name}`;
+  $('#conStatus').textContent = '';
+  $('#conOut').textContent = '';
+  $('#conErr').textContent = '';
+  con.showModal();
+  pollConsole();
+  clearInterval(conTimer);
+  conTimer = setInterval(pollConsole, 1000);
+  $('#conInput').focus();
+}
+
+function closeConsole() { clearInterval(conTimer); conId = null; if (con.open) con.close(); }
+con.addEventListener('close', () => { clearInterval(conTimer); conId = null; });
+$('#conClose').addEventListener('click', closeConsole);
+
+$('#conForm').addEventListener('submit', async e => {
+  e.preventDefault();
+  const text = $('#conInput').value.trim();
+  if (!text || !conId) return;
+  $('#conErr').textContent = '';
+  try {
+    await api('POST', `/api/bots/${conId}/say`, { text });
+    conHistory.push(text); conHi = conHistory.length;
+    $('#conInput').value = '';
+    pollConsole();
+  } catch (err) { $('#conErr').textContent = err.message; }
+});
+
+$('#conInput').addEventListener('keydown', e => {
+  if (e.key === 'ArrowUp' && conHistory.length) { e.preventDefault(); conHi = Math.max(0, conHi - 1); e.target.value = conHistory[conHi]; }
+  else if (e.key === 'ArrowDown' && conHistory.length) { e.preventDefault(); conHi = Math.min(conHistory.length, conHi + 1); e.target.value = conHistory[conHi] || ''; }
 });
 
 /* ---------- paleidimas ---------- */
