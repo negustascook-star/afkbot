@@ -184,6 +184,8 @@ class Worker {
         this.listenUntil = 0;
         this.proxy = null;
         this.spawned = false;
+        this.chat = [];      // konsolė: serverio žinutės, įvykiai ir tavo komandos
+        this.chatSeq = 0;
     }
 
     log(msg, dedupe = false) {
@@ -192,7 +194,23 @@ class Worker {
         const time = new Date().toLocaleTimeString('lt-LT', { hour12: false, timeZone: 'Europe/Vilnius' });
         this.logs.push(`${time} ${msg}`);
         if (this.logs.length > 80) this.logs.shift();
+        this.pushChat(msg, 'sys');
         console.log(`[${this.cfg.name}] ${msg}`);
+    }
+
+    // kind: srv = serverio žinutė, sys = boto įvykis, me = tavo išsiųsta komanda
+    pushChat(text, kind) {
+        const t = new Date().toLocaleTimeString('lt-LT', { hour12: false, timeZone: 'Europe/Vilnius' });
+        this.chat.push({ n: ++this.chatSeq, t, text, kind });
+        if (this.chat.length > 300) this.chat.shift();
+    }
+
+    say(text) {
+        if (!this.bot || this.status !== 'online') throw new Error('Botas nėra prisijungęs');
+        text = String(text || '').replace(/[\r\n]+/g, ' ').trim().slice(0, 256);
+        if (!text) throw new Error('Tuščia žinutė');
+        this.bot.chat(text);
+        this.pushChat(text, 'me');
     }
 
     isCurrent(bot, run) { return this.bot === bot && this.runId === run && !this.removed; }
@@ -293,8 +311,8 @@ class Worker {
             this.log(`🚫 Išmestas: ${text.slice(0, 200)}`);
         });
         bot.on('message', m => {
-            // Trumpai rodome serverio atsakymus po /login ar /register
-            if (Date.now() < this.listenUntil) this.log(`💬 ${m.toString().slice(0, 140)}`);
+            const text = m.toString().trim();
+            if (text) this.pushChat(text.slice(0, 400), 'srv');
         });
         bot.once('spawn', () => this.onSpawn(bot));
         bot.on('end', reason => this.onEnd(bot, reason));
@@ -566,7 +584,8 @@ function readBody(req) {
 
 const server = http.createServer(async (req, res) => {
     try {
-        const p = new URL(req.url, 'http://localhost').pathname;
+        const urlObj = new URL(req.url, 'http://localhost');
+        const p = urlObj.pathname;
 
         // UptimeRobot pingas (be rakto)
         if (p === '/health') {
@@ -644,6 +663,14 @@ const server = http.createServer(async (req, res) => {
                 workers.delete(w.cfg.id);
                 saveBots();
                 return sendJson(res, 200, { ok: true });
+            }
+            if (req.method === 'GET' && action === 'console') {
+                const since = Number(urlObj.searchParams.get('since')) || 0;
+                return sendJson(res, 200, { status: w.status, last: w.chatSeq, lines: w.chat.filter(l => l.n > since) });
+            }
+            if (req.method === 'POST' && action === 'say') {
+                try { w.say((await readBody(req)).text); return sendJson(res, 200, { ok: true }); }
+                catch (e) { return sendJson(res, 400, { error: e.message }); }
             }
             if (req.method === 'POST' && action === 'restart') { w.restart(); return sendJson(res, 200, { ok: true }); }
             if (req.method === 'POST' && action === 'start') { w.start(); return sendJson(res, 200, { ok: true }); }
